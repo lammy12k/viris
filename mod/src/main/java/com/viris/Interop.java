@@ -116,7 +116,6 @@ public final class Interop {
     public static SharedTexture createTexture(String label, int usage, GpuFormat format, int glFormat, int width, int height) {
         int stale = GL45C.glGetError();
         if (stale != 0) {
-            // An earlier call's error, not this import's (-Dviris.glDebug=true names it).
             Viris.LOGGER.warn("VIRIS: GL error {} left before importing {}", stale, label);
         }
         GpuTexture texture;
@@ -134,15 +133,17 @@ public final class Interop {
                 .memory(info.deviceMemory()).handleType(HANDLE_OPAQUE_WIN32);
             PointerBuffer handle = stack.mallocPointer(1);
             check(KHRExternalMemoryWin32.vkGetMemoryWin32HandleKHR(device.vkDevice(), handleInfo, handle), "memory handle");
-            // Dedicated allocation: the memory object is exactly this image, at offset 0.
-            long size = info.offset() + info.size();
+            long size = info.size();
             int memory = EXTMemoryObject.glCreateMemoryObjectsEXT();
             EXTMemoryObject.glMemoryObjectParameterivEXT(memory, EXTMemoryObject.GL_DEDICATED_MEMORY_OBJECT_EXT,
-                new int[] {GL45C.GL_TRUE});
+                    new int[] { GL45C.GL_TRUE });
             EXTMemoryObjectWin32.glImportMemoryWin32HandleEXT(memory, size,
-                EXTMemoryObjectWin32.GL_HANDLE_TYPE_OPAQUE_WIN32_EXT, handle.get(0));
+                    EXTMemoryObjectWin32.GL_HANDLE_TYPE_OPAQUE_WIN32_EXT, handle.get(0));
+
             int glTexture = GL45C.glCreateTextures(GL45C.GL_TEXTURE_2D);
-            EXTMemoryObject.glTextureStorageMem2DEXT(glTexture, 1, glFormat, width, height, memory, info.offset());
+            GL45C.glTextureParameteri(glTexture, EXTMemoryObject.GL_TEXTURE_TILING_EXT, EXTMemoryObject.GL_OPTIMAL_TILING_EXT);
+            EXTMemoryObject.glTextureStorageMem2DEXT(glTexture, 1, glFormat, width, height, memory, 0L);
+            GL45C.glFinish();
             closeHandle(handle.get(0));
             int error = GL45C.glGetError();
             if (error != 0) {

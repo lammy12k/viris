@@ -520,13 +520,10 @@ public final class VoxyFrame {
             GL45C.glClearTexImage(set.vxOpaque.glTexture(), 0, GL45C.GL_RED, GL45C.GL_FLOAT, new float[] {1, 1, 1, 1});
             GL45C.glClearTexImage(set.vxTrans.glTexture(), 0, GL45C.GL_RED, GL45C.GL_FLOAT, new float[] {1, 1, 1, 1});
         }
-        EXTSemaphore.glSignalSemaphoreEXT((int) set.glDone[1], new int[0], set.glTextures(), set.layouts());
-        GL45C.glFlush();
-        // Vulkan waits here, before the world pass: at the pack's deferred stage the game's level pass is
-        // still open, and no semaphore operation may go in there. vkDone follows with the frame's submit.
+        long fence = GL45C.glFenceSync(GL45C.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        GL45C.glClientWaitSync(fence, GL45C.GL_SYNC_FLUSH_COMMANDS_BIT, 1_000_000_000L);
+        GL45C.glDeleteSync(fence);
         closeVitrailPasses();
-        VulkanCommandEncoder vulkan = (VulkanCommandEncoder) ((FrontendCommandEncoder) RenderSystem.getDevice().createCommandEncoder()).backend();
-        vulkan.waitSemaphore(set.glDone[0], 0L, ALL_COMMANDS);
         pendingPackSet = set;
         frameSet = set;
         vkDoneAtSubmit = true;
@@ -789,8 +786,6 @@ public final class VoxyFrame {
     public static void beforeSubmit() {
         if (vkDoneAtSubmit && frameSet != null) {
             vkDoneAtSubmit = false;
-            VulkanCommandEncoder vulkan = (VulkanCommandEncoder) ((FrontendCommandEncoder) RenderSystem.getDevice().createCommandEncoder()).backend();
-            vulkan.signalSemaphore(frameSet.vkDone[0], 0L, ALL_COMMANDS);
             frameSet.vkDonePending = true;
         }
     }

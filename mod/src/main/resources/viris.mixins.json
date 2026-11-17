@@ -24,7 +24,6 @@
     "SpriteContentsAccessor",
     "TextureAtlasAccessor",
     "VoxyRenderSystemMixin",
-    "VulkanCommandEncoderMixin",
     "VulkanFeatureSetsMixin",
     "VulkanGpuTextureAccessor",
     "VulkanGpuTextureMixin",

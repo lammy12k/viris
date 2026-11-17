@@ -21,10 +21,7 @@ import com.mojang.renderpearl.api.textures.FilterMode;
 import com.mojang.renderpearl.api.textures.GpuSampler;
 import com.mojang.renderpearl.api.textures.GpuTexture;
 import com.mojang.renderpearl.api.textures.GpuTextureView;
-import com.mojang.renderpearl.backend.vulkan.VulkanCommandEncoder;
-import com.mojang.renderpearl.frontend.FrontendCommandEncoder;
 
-import java.nio.ByteBuffer;
 import java.util.Optional;
 import java.util.OptionalDouble;
 import me.cortex.voxy.client.core.IVoxyRenderSystemHolder;
@@ -35,7 +32,6 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.resources.Identifier;
 import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
-import org.lwjgl.opengl.EXTSemaphore;
 import org.lwjgl.opengl.GL45C;
 
 /**
@@ -165,12 +161,6 @@ public final class VoxyFrame {
         /** The game's lightmap, copied in when this set was last composited; Voxy reads it when it next draws into the set. */
         final Interop.SharedTexture lightmap = Interop.createTexture("Voxy lightmap", GpuTexture.USAGE_RENDER_ATTACHMENT
             | GpuTexture.USAGE_TEXTURE_BINDING, GpuFormat.RGBA8_UNORM, GL45C.GL_RGBA8, LIGHTMAP_SIZE, LIGHTMAP_SIZE);
-        /** GL signals it once Voxy drew into the set, Vulkan waits for it before the composite. */
-        final long[] glDone = Interop.createSemaphore();
-        /** Vulkan signals it after the composite, GL waits for it before it draws into the set again. */
-        final long[] vkDone = Interop.createSemaphore();
-        /** Vulkan signalled vkDone and GL hasn't waited for it yet. */
-        boolean vkDonePending;
 
         /** Shader pack mode: copies of the colour targets Voxy's pack patch wrote, and its depth (far = 1). */
         Interop.SharedTexture[] packTargets;
@@ -179,38 +169,12 @@ public final class VoxyFrame {
         Interop.SharedTexture vxOpaque;
         Interop.SharedTexture vxTrans;
 
-        int[] glTextures() {
-            int extra = packTargets == null ? 0 : packTargets.length + 2 + packInputs.length;
-            int[] out = new int[3 + extra];
-            out[0] = color.glTexture();
-            out[1] = depth.glTexture();
-            out[2] = lightmap.glTexture();
-            if (packTargets != null) {
-                for (int i = 0; i < packTargets.length; i++) {
-                    out[3 + i] = packTargets[i].glTexture();
-                }
-                out[3 + packTargets.length] = vxOpaque.glTexture();
-                out[4 + packTargets.length] = vxTrans.glTexture();
-                for (int i = 0; i < packInputs.length; i++) {
-                    out[5 + packTargets.length + i] = packInputs[i].glTexture();
-                }
-            }
-            return out;
-        }
-
-        int[] layouts() {
-            int[] out = new int[glTextures().length];
-            java.util.Arrays.fill(out, EXTSemaphore.GL_LAYOUT_GENERAL_EXT);
-            return out;
-        }
-
         void ensurePack(int count, int inputs, int width, int height) {
             if (packTargets != null && packTargets.length == count && packInputs.length == inputs
                 && vxOpaque.texture().getWidth(0) == width
                 && vxOpaque.texture().getHeight(0) == height) {
                 return;
             }
-            waitForVulkan();
             GL45C.glFinish();
             closePack();
             int usage = GpuTexture.USAGE_RENDER_ATTACHMENT | GpuTexture.USAGE_TEXTURE_BINDING;
@@ -241,14 +205,6 @@ public final class VoxyFrame {
             }
         }
 
-        void waitForVulkan() {
-            //if (vkDonePending) {
-            //    EXTSemaphore.glWaitSemaphoreEXT((int) vkDone[1], new int[0], glTextures(), layouts());
-            //    vkDonePending = false;
-            //}
-            vkDonePending = false;
-        }
-
         void resize(int width, int height) {
             if (color != null && color.texture().getWidth(0) == width && color.texture().getHeight(0) == height) {
                 return;
@@ -256,7 +212,6 @@ public final class VoxyFrame {
             if (color != null) {
                 // GL is done with the old images before they go; Vulkan frames still in flight keep them
                 // until RenderPearl destroys them.
-                waitForVulkan();
                 GL45C.glFinish();
                 color.close();
                 depth.close();
@@ -272,8 +227,6 @@ public final class VoxyFrame {
             GL45C.glTextureStorage2D(glColor, 1, GL45C.GL_RGBA8, width, height);
         }
     }
-
-    private static final long ALL_COMMANDS = 0x10000L;
 
     /** Voxy's lightmap texture on the GL side (LightMapHelperMixin): the game's lightmap of SETS frames ago. */
     public static int lightmapGlTexture() {
@@ -318,7 +271,6 @@ public final class VoxyFrame {
         int height = main.height;
         ensureResources(width, height, main.getColorTexture().getFormat());
         ImageSet set = current;
-        set.waitForVulkan();
         GL45C.glClearTexImage(set.glColor, 0, GL45C.GL_RGBA, GL45C.GL_FLOAT, new float[] {0, 0, 0, 0});
         GL45C.glClearTexImage(set.glDepth, 0, GL45C.GL_DEPTH_COMPONENT, GL45C.GL_FLOAT, new float[] { clearDepth() });
 
@@ -448,9 +400,7 @@ public final class VoxyFrame {
     private static ImageSet pendingInputSet;
     /** Set whose depth the pack's passes read this frame; its vkDone is signalled with the frame's submit. */
     private static ImageSet packReadSet;
-    private static boolean vkDoneAtSubmit;
     /** Set GL drew into this frame: its vkDone goes with the frame's submit. */
-    private static ImageSet frameSet;
     private static int packSourceDepth;
     private static int packSourceColour;
     private static int packSourceWidth;
@@ -498,7 +448,6 @@ public final class VoxyFrame {
         ensureResources(width, height, main.getColorTexture().getFormat());
         ImageSet set = current;
         set.ensurePack(packPipeline.targets.length, packPipeline.inputTargets.size(), width, height);
-        set.waitForVulkan();
         ensurePackSource(width, height);
         packPipeline.clearTargets();
         GL45C.glClearTexImage(packSourceDepth, 0, GL45C.GL_DEPTH_COMPONENT, GL45C.GL_FLOAT, new float[] {clearDepth()});
@@ -525,8 +474,6 @@ public final class VoxyFrame {
         GL45C.glDeleteSync(fence);
         closeVitrailPasses();
         pendingPackSet = set;
-        frameSet = set;
-        vkDoneAtSubmit = true;
         frame = (frame + 1) % SETS;
         if (sets[frame] == null) {
             sets[frame] = new ImageSet();
@@ -780,14 +727,6 @@ public final class VoxyFrame {
         RenderSystem.getDevice().createCommandEncoder().writeToTexture(farTexture, one, 0, 0, 0, 0, 1, 1);
         org.lwjgl.system.MemoryUtil.memFree(one);
         farView = RenderSystem.getDevice().createTextureView(farTexture);
-    }
-
-    /** With the frame's submit (VulkanCommandEncoderMixin): the pack's passes are done with the set's depth. */
-    public static void beforeSubmit() {
-        if (vkDoneAtSubmit && frameSet != null) {
-            vkDoneAtSubmit = false;
-            frameSet.vkDonePending = true;
-        }
     }
 
     private static void dropPackPipeline() {
